@@ -1,129 +1,70 @@
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 
-def inputs_dependences(data, n, glitches_chosen, chave):
-    
-    freq_dict = dict([
-        ('d', 'daily'),
-        ('w', 'weekly'),
-        ('m', 'monthly'),
-        ('q', 'quarterly'),
-        ('2q', 'half-yearly'),
-        ('y', 'annual')
-    ])
-    if chave not in freq_dict:
-        print("Invalid key.")
-        return
-    
-    valid_labels = set(data['label'].unique())
-    invalid_labels = [nome for nome in glitches_chosen if nome not in valid_labels]
-    
-    if invalid_labels:
-        print("The following names are invalid or misspelled: \n")
-        for nome in invalid_labels:
-            print(f"  - {nome}")
-    else:
-        print("All chosen names are valid.")
+from astropy.time import Time
 
-def plot_function(data, glitches_number, glitches_chosen, time_key, run):
-    
-    freq_dict = dict([
-        ('d', 'daily'),
-        ('w', 'weekly'),
-        ('m', 'monthly'),
-        ('q', 'quarterly'),
-        ('2q', 'half-yearly'),
-        ('y', 'annual')
-    ])
-    
-    gps_epoch = pd.Timestamp('1980-01-06 00:00:00', tz='UTC')
+# Count the glitches ocorrence
+def count_glitches(data, glitch_name, interval):
+    glitch = data[data['label'] == glitch_name].copy()
 
-    plt.figure(figsize=(10,5))
-    
-    for i in range(glitches_number):
-        
-        df = data[data['label'] == glitches_chosen[i]].copy()
-        df.index = gps_epoch + pd.to_timedelta(df['GPStime'], unit='s')
-        
-        x_axis = df.resample(time_key).size()
-        
-        plt.plot(x_axis.index, x_axis.values, marker='o', linestyle='-', label=glitches_chosen[i])
-  
-    # plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-    # plt.gcf().autofmt_xdate()
+    times = np.sort(glitch['GPStime'].values)
+    bins = np.arange(times[0], times[-1] + interval, interval)
 
-    plt.ylabel('Numbers of Glitches')
-    plt.title(f'{run} run events {freq_dict[time_key]}')
+    # Converter GPS para datetime usando astropy
+    bins_dt = Time(bins[1:], format='gps').to_datetime()
+    counts, _ = np.histogram(times, bins=bins)
 
-    # ax.savefig('images/time_tracking.png')
+    return counts, bins_dt
 
-    plt.tight_layout()
-    plt.legend()
-    plt.grid()
-    plt.show()
+# Calculate the rate of glitches per interval
+def rate_glitches(data, glitch_name, active, interval):
 
-def plot_function_per_rate(data, glitches_number, glitches_chosen, time_key, run):
-    
-    freq_dict = dict([
-        ('d', 'daily'),
-        ('w', 'weekly'),
-        ('m', 'monthly'),
-        ('q', 'quarterly'),
-        ('2q', 'half-yearly'),
-        ('y', 'annual')
-    ])
-    
-    gps_epoch = pd.Timestamp('1980-01-06 00:00:00', tz='UTC')
-    
-    plt.figure(figsize=(10,5))
-    
-    for i in range(glitches_number):
-        
-        df = data[data['label'] == glitches_chosen[i]].copy()
-        df.index = gps_epoch + pd.to_timedelta(df['GPStime'], unit='s')
+  counts, bins_rate = count_glitches(data, glitch_name, interval)
+  active_week = active*168
+  rate = counts/active_week
 
-        count_series = df.resample(time_key).size()
-        duration_series = df['duration'].resample(time_key).sum()
+  return rate, bins_rate
 
-        rate_series = count_series / duration_series.replace(0, np.nan)
-        
-        # x_axis = df.resample(time_key).size()
-        
-        plt.plot(rate_series.index, rate_series.values, marker='o', linestyle='-', label=glitches_chosen[i])
-    
-    # plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-    # plt.gcf().autofmt_xdate()
-    
-    plt.ylabel('Numbers of Glitches per Rate')
-    plt.title(f'{run} run events {freq_dict[time_key]}')
-    
-    # ax.savefig('images/time_tracking.png')
-    
-    plt.tight_layout()
-    plt.legend()
-    plt.grid()
-    plt.show()
 
-def count_glitch(data, time, glitch):
+# Calculate the operation time
+def time_active(df, interval):
+  start_obs = df['start'].min()
+  end_obs = df['end'].max()
 
-    # tam = len(data)
-    # time_begin = data['GPStime'][0]
-    # time_end = data['GPStime'][tam-1]
-    # time_range = time_end - time_begin
-    
-    # hours_number = int(time_range/3600)
-    
-    print(time)
-    bins = time
-    
-    # Filtra apenas os eventos do tipo de glitch desejado
-    data_filtered = data[data['label'] == glitch]
-    
-    # Divide os tempos filtrados em faixas
-    data_binned = pd.cut(data_filtered['GPStime'], bins=bins)
-    
-    # Conta quantos eventos por faixa
-    counts = data_binned.value_counts().sort_index()
-    
-    return counts
+  week_edges = np.arange(start_obs, end_obs + interval, interval)
+
+  active_time_per_week = []
+
+  for i in range(len(week_edges) - 1):
+      week_start = week_edges[i]
+      week_end = week_edges[i + 1]
+      total_on = 0
+
+      for _, row in df.iterrows():
+          seg_start = row['start']
+          seg_end = row['end']
+
+          inter_start = max(week_start, seg_start)
+          inter_end = min(week_end, seg_end)
+
+          if inter_start < inter_end:
+              total_on += inter_end - inter_start
+
+      active_time_per_week.append(total_on)
+
+  result = pd.DataFrame({
+      'week_start': week_edges[:-1],
+      'week_end': week_edges[1:],
+      'active_time': active_time_per_week
+  })
+
+  active = result['active_time'].values/interval
+  return active
+
+
+# Add tracks by station
+def adicionar_faixa(ax, inicio, fim, cor, label=None):
+    ax.axvspan(inicio, fim, color=cor, alpha=0.2, label=label)
+
+
+
